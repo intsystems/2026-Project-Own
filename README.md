@@ -1,4 +1,4 @@
-# Title
+# Снижение вычислительной сложности метода Muon за счёт разложений матриц весов
 
 <!-- Change `kisnikser/m1p-template` to `intsystems/your-repository`-->
 [![License](https://badgen.net/github/license/kisnikser/m1p-template?color=green)](https://github.com/kisnikser/m1p-template/blob/main/LICENSE)
