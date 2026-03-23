@@ -44,7 +44,7 @@
 %%%
 
 
-\title{Title}
+\title{Reducing the computational complexity of the Muon method through weight matrix decompositions}
 
 
 % The \author macro works with any number of authors. There are two commands
@@ -57,15 +57,15 @@
 
 
 \author{
-  Name Surname\\
+  Ruslan Kabirov\\
   MIPT\\
   Moscow, Russia\\
-  \texttt{email@phystech.edu}\\
+  \texttt{kabirov.ra@phystech.edu}\\
   \And
-  Name Surname\\
+  and my gang\\
   MIPT\\
   Moscow, Russia\\
-  \texttt{email@phystech.edu}\\
+  \texttt{mygang@phystech.edu}\\
 }
 
 
@@ -75,24 +75,69 @@
 \maketitle
 
 \begin{abstract}
-    TODO
+Over the past year, the Muon method \cite{jordan2024muon} has gained substantial popularity in deep learning. In its standard form, Muon computes an approximation to the polar decomposition of a weight matrix at each iteration and applies an update using the resulting orthogonal factor, which introduces additional computational overhead. We propose [...] as a more efficient alternative and show, through pretraining experiments on several models, that it reduces computational cost while preserving the key optimization benefits of Muon.
 \end{abstract}
 
-\textbf{Keywords:} TODO
+\textbf{Keywords:} Muon optimizer, matrix orthogonalization, Newton–Schulz iteration, polar decomposition, low-rank approximation, computational efficiency, distributed training.
 
 \section{Introduction}\label{sec:intro}
 
-TODO
+Muon has recently demonstrated strong performance in deep learning and has begun to see use in the training of large language models \cite{liu2025muonscalablellmtraining}. A central step of Muon is the computation of the orthogonal factor \(UV^\top\), where \(W = U \Sigma V^\top\) denotes the singular value decomposition of a weight matrix. In practice, this operation is commonly approximated via Newton--Schulz iterations, but performing such an approximation at every optimization step incurs substantial computational cost. This overhead becomes particularly significant for large weight matrices, where repeated orthogonalization may account for a nontrivial fraction of the total optimization cost. As model sizes grow, this step can limit the practical scalability of Muon.
+
+In this paper, we investigate how to reduce this overhead through structured matrix decompositions. Specifically, we decompose the original weight matrix into a collection of smaller factors,
+\[
+W \;\rightarrow\; W_1, \dots, W_n,
+\]
+and apply Newton--Schulz iterations to these factors rather than to the full matrix. This perspective suggests that full-matrix orthogonalization may be unnecessarily expensive when the update can be represented by a smaller structured surrogate. In many cases, the geometric information most relevant for optimization may be preserved by compressed or factorized representations of the original matrix. Our goal is therefore to improve the efficiency of Muon without sacrificing its optimization performance.
+
+Our central question is whether Muon can be made substantially cheaper without losing its optimization advantages. More specifically, we ask which structured approximations provide the best trade-off between computational efficiency and training quality.
 
 \textbf{Contributions.} Our contributions can be summarized as follows:
 \begin{itemize}
-    \item We present...
-    \item We demonstrate the validity of our theoretical results through empirical studies...
-    \item We highlight the implications of our findings for...
+    \item We propose a family of structured Muon variants based on matrix decompositions.
+    \item We analyze the computational cost of these variants relative to standard Muon.
+    \item  We compare different decomposition strategies experimentally across multiple training settings.
+    \item We identify the approximations that provide the most favorable efficiency--performance trade-off.
 \end{itemize}
 
 \textbf{Outline.} The rest of the paper is organized as follows...
 
+\section{Problem statement}\label{sec:ps}
+Let \(W \in \mathbb{R}^{n \times m}\) be a matrix parameter, and let \(\mathcal{L}(W)\) denote the objective function to be minimized. The Muon optimizer updates \(W\) according to
+\begin{align}
+M_t &= \beta M_{t-1} + G_t, \\
+O_t &= \operatorname{Newton\text{-}Schulz}(M_t), \\
+W_t &= W_{t-1} - \alpha O_t,
+\end{align}
+where \(G_t = \nabla_W \mathcal{L}(W_{t-1})\). The orthogonalized update is approximated using a fixed number of Newton--Schulz iterations. We first normalize the input matrix:
+\begin{align}
+X_0 = \frac{W}{\lVert W \rVert_F}.
+\end{align}
+Then, for \(k = 0, \dots, 4\), we apply the iteration
+\begin{align}
+A_k &= X_k X_k^\top, \\
+X_{k+1} &= a X_k - b A_k X_k + c A_k^2 X_k,
+\end{align}
+where
+\[
+(a,b,c) = (3.4445,\,4.7750,\,2.0315).
+\]
+The final orthogonalized matrix is given by
+\begin{align}
+\operatorname{NS}(W) = X_5.
+\end{align}
+
+We observe that the most expensive part of a Muon step is the Newton--Schulz orthogonalization. To reduce this cost, we replace the full matrix update with a structured factorization into smaller matrix components:
+\[
+W \;\rightarrow\; W^{(1)}, \dots, W^{(n)}.
+\]
+We then apply Muon independently to each factor. For \(i = 1, \dots, n\), the updates are given by
+\begin{align}
+M_t^{(i)} &= \beta M_{t-1}^{(i)} + G_t^{(i)}, \\
+O_t^{(i)} &= \operatorname{Newton\text{-}Schulz}\!\left(M_t^{(i)}\right), \\
+W_t^{(i)} &= W_{t-1}^{(i)} - \alpha O_t^{(i)}.
+\end{align}
+In this way, the expensive orthogonalization step is performed on smaller matrices rather than on the full parameter matrix, with the goal of reducing computational cost while preserving the optimization benefits of Muon.
 \section{Related Work}\label{sec:rw}
 
 \textbf{Topic \#1.}
