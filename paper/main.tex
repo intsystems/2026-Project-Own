@@ -12,49 +12,29 @@
 \usepackage{microtype}
 \usepackage{xcolor}
 
-%%%
-
 \usepackage{subcaption}
 \usepackage{graphicx}
 \usepackage{multirow}
 \usepackage{amsmath,amssymb,amsfonts}
 \usepackage{amsthm}
 \usepackage{mathrsfs}
-\usepackage{xcolor}
 \usepackage{textcomp}
 \usepackage{manyfoot}
 \usepackage{algorithm}
 \usepackage{algorithmicx}
 \usepackage{algpseudocode}
 \usepackage{listings}
+\usepackage{float}
 
-\newtheorem{theorem}{Theorem} % continuous numbers
-%%\newtheorem{theorem}{Theorem}[section] % sectionwise numbers
-%% optional argument [theorem] produces theorem numbering sequence instead of independent numbers for Proposition
-\newtheorem{proposition}[theorem]{Proposition}% 
-\newtheorem{lemma}{Lemma}% 
-%%\newtheorem{proposition}{Proposition} % to get separate numbers for theorem and proposition etc.
-
+\newtheorem{theorem}{Theorem}
+\newtheorem{proposition}[theorem]{Proposition}
+\newtheorem{lemma}{Lemma}
 \newtheorem{example}{Example}
 \newtheorem{remark}{Remark}
-
 \newtheorem{definition}{Definition}
 \newtheorem{assumption}{Assumption}
 
-%%%
-
-
-\title{Reducing the computational complexity of the Muon method through weight matrix decompositions}
-
-
-% The \author macro works with any number of authors. There are two commands
-% used to separate the names and addresses of multiple authors: \And and \AND.
-%
-% Using \And between authors leaves it to LaTeX to determine where to break the
-% lines. Using \AND forces a line break at that point. So, if LaTeX puts 3 of 4
-% authors names on the first line, and the last on the second line, try using
-% \AND instead of \And before the third author name.
-
+\title{Reducing the Cost of Muon with Monarch-Parameterized Layers}
 
 \author{
   Ruslan Kabirov\\
@@ -62,120 +42,423 @@
   Moscow, Russia\\
   \texttt{kabirov.ra@phystech.edu}\\
   \And
-  and my gang\\
+  Alexandr Shestakov\\
   MIPT\\
   Moscow, Russia\\
-  \texttt{mygang@phystech.edu}\\
+  \texttt{ashestakov@phystech.edu}\\
 }
 
-
 \begin{document}
-
 
 \maketitle
 
 \begin{abstract}
-Over the past year, the Muon method \cite{jordan2024muon} has gained substantial popularity in deep learning. In its standard form, Muon computes an approximation to the polar decomposition of a weight matrix at each iteration and applies an update using the resulting orthogonal factor, which introduces additional computational overhead. We propose [...] as a more efficient alternative and show, through pretraining experiments on several models, that it reduces computational cost while preserving the key optimization benefits of Muon.
+Muon has recently gained attention as an optimizer for neural network training because of its use of orthogonalized matrix-valued updates \cite{jordan2024muon,liu2025muonscalablellmtraining}. In its standard form, Muon relies on Newton--Schulz iterations to approximate the polar factor of a matrix update, which introduces additional computational overhead. We study whether this cost can be reduced by replacing selected dense layers with Monarch-parameterized layers \cite{dao2022monarchexpressivestructuredmatrices}. This structure allows Newton--Schulz iterations to be applied to smaller block matrices and creates opportunities for parallel block-wise computation. We evaluate the proposed variants in pretraining experiments with a compact GPT-2 style model and compare them against Muon and AdamW baselines. Our goal is to reduce the cost of Muon's orthogonalization step while keeping validation loss and perplexity close to the baseline methods.
 \end{abstract}
 
-\textbf{Keywords:} Muon optimizer, matrix orthogonalization, Newton–Schulz iteration, polar decomposition, low-rank approximation, computational efficiency, distributed training.
+\textbf{Keywords:} Muon optimizer, Monarch matrices, matrix orthogonalization, Newton--Schulz iteration, polar decomposition, structured matrices, computational efficiency.
 
 \section{Introduction}\label{sec:intro}
 
-Muon has recently demonstrated strong performance in deep learning and has begun to see use in the training of large language models \cite{liu2025muonscalablellmtraining}. A central step of Muon is the computation of the orthogonal factor \(UV^\top\), where \(W = U \Sigma V^\top\) denotes the singular value decomposition of a weight matrix. In practice, this operation is commonly approximated via Newton--Schulz iterations, but performing such an approximation at every optimization step incurs substantial computational cost. This overhead becomes particularly significant for large weight matrices, where repeated orthogonalization may account for a nontrivial fraction of the total optimization cost. As model sizes grow, this step can limit the practical scalability of Muon.
+\subsection{Muon and orthogonalized updates}
 
-In this paper, we investigate how to reduce this overhead through structured matrix decompositions. Specifically, we decompose the original weight matrix into a collection of smaller factors,
+Muon was introduced as an optimizer for hidden layers in neural networks and has recently demonstrated strong empirical performance in deep learning \cite{jordan2024muon}. More recent work has shown that Muon can scale to large language model training when combined with appropriate update scaling and weight decay choices \cite{liu2025muonscalablellmtraining}. Unlike standard element-wise adaptive optimizers, Muon uses matrix-valued updates and explicitly controls their geometry through an orthogonalization step. A central operation in Muon is the computation of the orthogonal factor \(UV^\top\), where
 \[
-W \;\rightarrow\; W_1, \dots, W_n,
+W = U \Sigma V^\top
 \]
-and apply Newton--Schulz iterations to these factors rather than to the full matrix. This perspective suggests that full-matrix orthogonalization may be unnecessarily expensive when the update can be represented by a smaller structured surrogate. In many cases, the geometric information most relevant for optimization may be preserved by compressed or factorized representations of the original matrix. Our goal is therefore to improve the efficiency of Muon without sacrificing its optimization performance.
+denotes the singular value decomposition of a matrix \(W\). In the context of Muon, \(W\) denotes the matrix-valued update to which the orthogonalization step is applied. The factor \(UV^\top\) can be interpreted as the orthogonal component of \(W\), and it plays a key role in shaping the direction of the optimizer update \cite{jordan2024muon,liu2025muonscalablellmtraining}.
 
-Our central question is whether Muon can be made substantially cheaper without losing its optimization advantages. More specifically, we ask which structured approximations provide the best trade-off between computational efficiency and training quality.
+Computing this factor exactly by singular value decomposition is too expensive to perform repeatedly during training. Therefore, practical implementations of Muon usually approximate the orthogonalization step using Newton--Schulz iterations \cite{jordan2024muon}. Newton--Schulz iteration is an iterative matrix procedure that approximates the orthogonal factor without explicitly computing a full SVD. Although this approximation is substantially cheaper than exact decomposition, it is still applied at every optimization step. For large dense matrices, repeated orthogonalization may account for a nontrivial part of the total optimizer cost. As model sizes continue to grow, this operation can become a practical bottleneck that limits the scalability of Muon \cite{liu2025muonscalablellmtraining}.
+
+\subsection{Directions for improving Muon efficiency}
+
+Recent work suggests two broad directions for improving the efficiency of Muon-type optimizers. The first direction is to modify the optimization algorithm itself or the orthogonalization procedure used inside it. Scion studies training with norm-constrained linear minimization oracles and introduces normalization mechanisms that are related to the stability of orthogonalized updates \cite{pethick2025trainingdeeplearningmodels}. Dion proposes distributed orthonormalized updates and replaces Newton--Schulz-style orthogonalization with a power-iteration-based approach that is more suitable for parallel and distributed settings \cite{ahn2025diondistributedorthonormalizedupdates}. Dion2 reduces the matrix size used inside Muon by applying orthogonalization to smaller randomly selected submatrices \cite{ahn2025dion2simplemethodshrink}. MuonBP proposes block-periodic orthogonalization, reducing the frequency or scope of expensive orthogonalization steps \cite{khaled2025muonbpfastermuonblockperiodic}. Other works focus more directly on improving Newton--Schulz or related matrix sign iterations, such as Gram Newton--Schulz \cite{GramNewtonSchulz} and Polar Express \cite{amsel2026polarexpressoptimalmatrix}. These methods primarily focus on changing the optimizer or reducing the cost of the matrix operation performed by the optimizer.
+
+The second direction, which we focus on in this work, is to exploit structure in the matrix parameters themselves. Instead of applying Muon to fully dense layers, one can replace selected dense matrices with structured parameterizations that are cheaper to store, multiply, and orthogonalize. Monarch matrices are a natural candidate for this purpose: they represent a dense-like linear transformation using permutation and block-diagonal factors, and prior work has shown that such parameterizations can provide favorable efficiency--quality trade-offs in neural network training \cite{dao2022monarchexpressivestructuredmatrices}. This suggests that structured layers may reduce not only the cost of the forward and backward passes, but also the cost of Muon's Newton--Schulz orthogonalization step.
+
+\subsection{Monarch-structured layers for Muon}
+
+In this paper, we investigate whether the overhead of Muon can be reduced by replacing dense matrix layers with structured Monarch-parameterized layers \cite{dao2022monarchexpressivestructuredmatrices}. Instead of assuming that an arbitrary dense matrix can be exactly decomposed into Monarch form, we restrict selected trainable matrices to a structured class of the form
+\[
+W = P L P^\top R,
+\]
+where \(P\) is a fixed permutation matrix, and \(L\) and \(R\) are trainable block-diagonal matrices, each consisting of two blocks. This parameterization does not represent every possible dense matrix. Rather, it replaces a dense layer with a structured surrogate that has fewer effective degrees of freedom and enables more efficient matrix operations.
+
+This structured parameterization is particularly relevant for Muon because the expensive orthogonalization step can be applied to smaller block-diagonal factors instead of the full dense matrix. Since the blocks are independent, Newton--Schulz iterations can be performed separately for each block. This not only reduces the effective matrix size involved in orthogonalization, but also exposes additional parallelism across blocks. Therefore, Monarch-structured layers may reduce the cost of Muon both through smaller matrix operations and through more parallel execution. This idea is complementary to optimizer-level methods such as Dion, Dion2, MuonBP, Gram Newton--Schulz, and Polar Express \cite{ahn2025diondistributedorthonormalizedupdates,ahn2025dion2simplemethodshrink,khaled2025muonbpfastermuonblockperiodic,GramNewtonSchulz,amsel2026polarexpressoptimalmatrix}.
+
+\subsection{Research question and contributions}
+
+The motivation for this approach is that full dense parameterization and full-matrix orthogonalization may be unnecessarily expensive for some parts of neural networks. A structured layer can preserve useful matrix interactions through permutations and block-diagonal factors while substantially reducing computational cost \cite{dao2022monarchexpressivestructuredmatrices}. However, this restriction also introduces a trade-off. Since Monarch-structured layers cannot express all dense matrices, the model may lose representational flexibility, and the optimizer update may differ from that of standard Muon applied to dense layers. The main challenge is therefore to determine whether the efficiency gains outweigh the possible loss in training quality.
+
+The central research question of this work is whether Muon can be made substantially cheaper by using Monarch-structured layers without sacrificing training performance. More specifically, we ask which structured layer designs and update strategies provide the best trade-off between computational efficiency, parallel execution, and model quality. By studying this question, we aim to clarify whether Monarch-parameterized layers can serve as a practical mechanism for scaling Muon to larger models and more expensive training regimes.
 
 \textbf{Contributions.} Our contributions can be summarized as follows:
 \begin{itemize}
-    \item We propose a family of structured Muon variants based on matrix decompositions.
-    \item We analyze the computational cost of these variants relative to standard Muon.
-    \item  We compare different decomposition strategies experimentally across multiple training settings.
-    \item We identify the approximations that provide the most favorable efficiency--performance trade-off.
+    \item We propose replacing selected dense layers with Monarch-parameterized layers in order to reduce the computational cost of Muon.
+    \item We show how the block structure of Monarch layers allows Newton--Schulz iterations to be applied to smaller independent matrices, creating opportunities for parallelization.
+    \item We analyze the computational cost of the proposed structured Muon variants and compare them with standard Muon applied to dense layers.
+    \item We study different strategies for updating the structured matrix factors during optimization, including block-wise updates and a random column-partitioned update inspired by Dion2 and MuonBP \cite{ahn2025dion2simplemethodshrink,khaled2025muonbpfastermuonblockperiodic}.
+    \item We identify the update strategy that provides the most favorable trade-off between computational efficiency and training performance.
 \end{itemize}
 
-\textbf{Outline.} The rest of the paper is organized as follows...
+\textbf{Outline.} The rest of the paper is organized as follows. Section~\ref{sec:ps} formalizes the problem statement and evaluation criteria. Section~\ref{sec:theory} describes the proposed structured Muon variants. Section~\ref{sec:rw} discusses related work. The following sections present the experimental setup and compare the resulting methods against Muon and AdamW baselines.
 
 \section{Problem statement}\label{sec:ps}
-Let \(W \in \mathbb{R}^{n \times m}\) be a matrix parameter, and let \(\mathcal{L}(W)\) denote the objective function to be minimized. The Muon optimizer updates \(W\) according to
+
+\subsection{Experimental setting}
+
+We consider the problem of training a compact GPT-2 style language model for next-token prediction. The model has the following configuration:
+\[
+n_{\mathrm{layer}} = 4, \qquad
+n_{\mathrm{head}} = 4, \qquad
+n_{\mathrm{embd}} = 384.
+\]
+Let
+\[
+\mathcal{D} = \{x^{(i)}\}_{i=1}^{N}
+\]
+be a dataset of token sequences, where each sequence is denoted by
+\[
+x^{(i)} = (x^{(i)}_1, \dots, x^{(i)}_T).
+\]
+The model \(f_\Theta\), parameterized by \(\Theta\), is trained to predict the next token from the previous context.
+
+\subsection{Training objective and evaluation criteria}
+
+The training objective is the standard autoregressive language modeling loss
 \begin{align}
+\mathcal{L}(\Theta)
+=
+-\frac{1}{N}
+\sum_{i=1}^{N}
+\sum_{t=1}^{T-1}
+\log p_\Theta\!\left(x^{(i)}_{t+1} \mid x^{(i)}_{\leq t}\right).
+\end{align}
+We evaluate the model using validation loss and perplexity. Since perplexity is directly determined by the language modeling loss, we use
+\begin{align}
+\operatorname{PPL} = \exp(\mathcal{L}_{\mathrm{val}}),
+\end{align}
+where \(\mathcal{L}_{\mathrm{val}}\) is the average validation loss.
+
+The goal of this work is to test whether the computational cost of Muon can be reduced by replacing selected dense matrix layers in GPT-2 with Monarch-parameterized layers, while keeping the final perplexity close to the baselines. We compare the proposed structured variants with standard Muon and AdamW. The main quality requirement is that the final validation perplexity of the proposed method should not differ substantially from the perplexity obtained by the baseline optimizers. In this work, we treat a relative difference of several percent as acceptable:
+\begin{align}
+\frac{
+\left|
+\operatorname{PPL}_{\mathrm{method}}
+-
+\operatorname{PPL}_{\mathrm{baseline}}
+\right|
+}{
+\operatorname{PPL}_{\mathrm{baseline}}
+}
+\leq \varepsilon,
+\end{align}
+where \(\varepsilon\) is chosen to be on the order of a few percent.
+
+\subsection{Standard Muon update}
+
+In standard Muon, a dense matrix parameter \(W\) is updated using a momentum matrix and an orthogonalized update \cite{jordan2024muon,liu2025muonscalablellmtraining}:
+\begin{align}
+G_t &= \nabla_W \mathcal{L}(\Theta_{t-1}), \\
 M_t &= \beta M_{t-1} + G_t, \\
-O_t &= \operatorname{Newton\text{-}Schulz}(M_t), \\
+O_t &= \operatorname{NS}(M_t), \\
 W_t &= W_{t-1} - \alpha O_t,
 \end{align}
-where \(G_t = \nabla_W \mathcal{L}(W_{t-1})\). The orthogonalized update is approximated using a fixed number of Newton--Schulz iterations. We first normalize the input matrix:
+where \(\alpha\) is the learning rate, \(\beta\) is the momentum coefficient, and \(\operatorname{NS}(\cdot)\) denotes the Newton--Schulz approximation of the orthogonal factor. The Newton--Schulz step is applied repeatedly during training and can become expensive for large dense matrices. This motivates both optimizer-level improvements \cite{ahn2025diondistributedorthonormalizedupdates,ahn2025dion2simplemethodshrink,khaled2025muonbpfastermuonblockperiodic,GramNewtonSchulz,amsel2026polarexpressoptimalmatrix} and structure-based approaches such as the one studied in this paper.
+
+\subsection{Monarch-parameterized layers}
+
+In this work, we do not attempt to decompose an arbitrary dense matrix \(W\) into Monarch form. Instead, we replace selected dense layers with Monarch-parameterized layers \cite{dao2022monarchexpressivestructuredmatrices}. For such a layer, the effective weight matrix is restricted to the structured form
 \begin{align}
-X_0 = \frac{W}{\lVert W \rVert_F}.
+\widetilde{W} = P L P^\top R,
 \end{align}
-Then, for \(k = 0, \dots, 4\), we apply the iteration
+where \(P\) is a fixed permutation matrix, and \(L\) and \(R\) are trainable block-diagonal matrices. This parameterization defines a restricted class of matrices and does not represent every possible dense matrix \(W \in \mathbb{R}^{n \times m}\).
+
+In our setting, each block-diagonal factor consists of two trainable blocks:
 \begin{align}
-A_k &= X_k X_k^\top, \\
-X_{k+1} &= a X_k - b A_k X_k + c A_k^2 X_k,
+L &= \operatorname{diag}(L^{(1)}, L^{(2)}), \\
+R &= \operatorname{diag}(R^{(1)}, R^{(2)}).
 \end{align}
-where
+Thus, the trainable parameters of the structured layer are
 \[
+\theta = \{L^{(1)}, L^{(2)}, R^{(1)}, R^{(2)}\}.
+\]
+The effective matrix \(\widetilde{W}\) is determined by these four blocks, and the full set of model parameters consists of the usual GPT-2 parameters together with the structured parameters of the replaced layers.
+
+\subsection{Block-wise Muon update}
+
+Instead of applying Muon to the full effective matrix \(\widetilde{W}\), we apply Muon independently to each trainable block. For any block \(B \in \theta\), the update is
+\begin{align}
+G_t^{B} &= \nabla_B \mathcal{L}(\Theta_{t-1}), \\
+M_t^{B} &= \beta M_{t-1}^{B} + G_t^{B}, \\
+O_t^{B} &= \operatorname{NS}(M_t^{B}), \\
+B_t &= B_{t-1} - \alpha O_t^{B}.
+\end{align}
+After updating all four blocks, the effective layer matrix is reconstructed as
+\begin{align}
+\widetilde{W}_t = P L_t P^\top R_t.
+\end{align}
+
+\subsection{Desired trade-off}
+
+The central problem studied in this work is whether this structured replacement can reduce the cost of Muon's Newton--Schulz orthogonalization while preserving the training quality of the original model. The expected benefit is that Newton--Schulz iterations are applied to smaller block matrices instead of a full dense matrix, and these block-wise computations can be performed independently. The main risk is that Monarch-parameterized layers are less expressive than dense layers, which may increase validation loss and perplexity.
+
+Therefore, the desired solution is a Monarch-based Muon variant that achieves a favorable trade-off between computational efficiency and language modeling quality. In particular, we seek a strategy whose final validation loss and perplexity remain within a few percent of the corresponding Muon or AdamW baselines, while reducing the cost of the orthogonalization step through smaller and potentially parallel block-wise Newton--Schulz updates.
+
+\section{Theory}\label{sec:theory}
+
+\subsection{Monarch-parameterized model}
+
+We consider a selected dense linear layer with weight matrix \(W\). Instead of training \(W\) as a fully dense matrix, we replace it with a Monarch-parameterized matrix \cite{dao2022monarchexpressivestructuredmatrices}
+\begin{align}
+\widetilde{W} = P L P^\top R,
+\end{align}
+where \(P\) is a fixed permutation matrix, and \(L\) and \(R\) are trainable block-diagonal matrices. In our setting, each of these matrices consists of two trainable blocks:
+\begin{align}
+L &= \operatorname{diag}(L^{(1)}, L^{(2)}), \\
+R &= \operatorname{diag}(R^{(1)}, R^{(2)}).
+\end{align}
+Thus, the trainable parameters of one Monarch layer are
+\[
+\theta = \{L^{(1)}, L^{(2)}, R^{(1)}, R^{(2)}\}.
+\]
+
+This parameterization restricts the class of possible weight matrices. In other words, \(\widetilde{W}\) is not an arbitrary dense matrix, and not every dense matrix \(W\) can be represented in this form. However, the structure preserves interactions between different coordinate groups through the permutation matrix \(P\), while the block-diagonal factors make matrix operations cheaper and more suitable for parallel computation \cite{dao2022monarchexpressivestructuredmatrices}.
+
+The main idea of our method is to apply Muon not to the full effective matrix \(\widetilde{W}\), but to the smaller trainable blocks \(L^{(1)}, L^{(2)}, R^{(1)}, R^{(2)}\). This changes the orthogonalization problem from one large Newton--Schulz computation to several smaller independent computations.
+
+\subsection{Newton--Schulz orthogonalization}
+
+Muon uses an approximate orthogonalized update. Given a matrix \(A\), we define the Newton--Schulz approximation as follows \cite{jordan2024muon,liu2025muonscalablellmtraining}. First, the matrix is normalized:
+\begin{align}
+X_0 = \frac{A}{\lVert A \rVert_F}.
+\end{align}
+Then, for \(k = 0, \dots, K-1\), we apply
+\begin{align}
+S_k &= X_k X_k^\top, \\
+X_{k+1} &= aX_k - bS_kX_k + cS_k^2X_k,
+\end{align}
+where in our experiments we use
+\[
+K = 5,
+\qquad
 (a,b,c) = (3.4445,\,4.7750,\,2.0315).
 \]
-The final orthogonalized matrix is given by
+The final approximation is
 \begin{align}
-\operatorname{NS}(W) = X_5.
+\operatorname{NS}(A) = X_K.
 \end{align}
 
-We observe that the most expensive part of a Muon step is the Newton--Schulz orthogonalization. To reduce this cost, we replace the full matrix update with a structured factorization into smaller matrix components:
+In standard Muon, this procedure is applied to a full momentum matrix. In the proposed method, it is applied separately to each Monarch block. Alternative improvements of the same general orthogonalization component have been studied in Gram Newton--Schulz and Polar Express \cite{GramNewtonSchulz,amsel2026polarexpressoptimalmatrix}.
+
+\subsection{Block-wise Muon update}
+
+For each trainable block
 \[
-W \;\rightarrow\; W^{(1)}, \dots, W^{(n)}.
+B \in \{L^{(1)}, L^{(2)}, R^{(1)}, R^{(2)}\},
 \]
-We then apply Muon independently to each factor. For \(i = 1, \dots, n\), the updates are given by
+we maintain a separate momentum matrix \(M^B_t\). At training step \(t\), the gradient with respect to block \(B\) is
 \begin{align}
-M_t^{(i)} &= \beta M_{t-1}^{(i)} + G_t^{(i)}, \\
-O_t^{(i)} &= \operatorname{Newton\text{-}Schulz}\!\left(M_t^{(i)}\right), \\
-W_t^{(i)} &= W_{t-1}^{(i)} - \alpha O_t^{(i)}.
+G_t^B = \nabla_B \mathcal{L}(\Theta_{t-1}),
 \end{align}
-In this way, the expensive orthogonalization step is performed on smaller matrices rather than on the full parameter matrix, with the goal of reducing computational cost while preserving the optimization benefits of Muon.
+where \(\Theta\) denotes all trainable model parameters. The block-wise Muon update is then given by
+\begin{align}
+M_t^B &= \beta M_{t-1}^B + G_t^B, \\
+O_t^B &= \operatorname{NS}(M_t^B), \\
+B_t &= B_{t-1} - \alpha O_t^B,
+\end{align}
+where \(\alpha\) is the learning rate and \(\beta\) is the momentum coefficient.
+
+After all four blocks are updated, the effective layer matrix is reconstructed as
+\begin{align}
+\widetilde{W}_t = P L_t P^\top R_t.
+\end{align}
+
+Thus, the optimizer never needs to apply Newton--Schulz iterations to the full dense effective matrix \(\widetilde{W}_t\). Instead, it orthogonalizes four smaller matrices independently. This structure-based reduction is complementary to methods that shrink or periodically orthogonalize matrices inside the optimizer itself \cite{ahn2025dion2simplemethodshrink,khaled2025muonbpfastermuonblockperiodic}.
+
+\subsection{Algorithm}
+
+The full training procedure for a Monarch-parameterized layer with block-wise Muon updates is shown in Algorithm~\ref{alg:block_muon}.
+
+\begin{algorithm}[H]
+\caption{Block-wise Muon for Monarch-parameterized layers}
+\label{alg:block_muon}
+\footnotesize
+\begin{algorithmic}[1]
+\Require Dataset \(\mathcal{D}\), model \(f_\Theta\), learning rate \(\alpha\), momentum coefficient \(\beta\), Newton--Schulz iterations \(K\)
+\Require Monarch blocks \(L^{(1)},L^{(2)},R^{(1)},R^{(2)}\) constructed by the Monarch layer
+
+\State \(\mathcal{B}\gets\{L^{(1)},L^{(2)},R^{(1)},R^{(2)}\}\)
+\State Initialize \(M_0^B\gets 0\) for all \(B\in\mathcal{B}\)
+
+\For{training step \(t=1,2,\dots\)}
+    \State Sample a mini-batch from \(\mathcal{D}\)
+    \State Construct \(\widetilde{W}_{t-1}=P L_{t-1}P^\top R_{t-1}\)
+    \State Compute \(\mathcal{L}(\Theta_{t-1})\) and gradients by backpropagation
+
+    \For{each block \(B\in\mathcal{B}\)}
+        \State \(G_t^B \gets \nabla_B\mathcal{L}(\Theta_{t-1})\)
+        \State \(M_t^B \gets \beta M_{t-1}^B + G_t^B\)
+        \State \(B_t \gets B_{t-1} - \alpha\,\operatorname{NS}_K(M_t^B)\)
+    \EndFor
+
+    \State Update non-Monarch parameters according to the chosen experimental protocol
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Dion2-inspired random column-partitioned update}
+
+In addition to the purely block-wise Muon update, we consider a periodic random column-partitioned strategy inspired by Dion2 and MuonBP \cite{ahn2025dion2simplemethodshrink,khaled2025muonbpfastermuonblockperiodic}. Dion2 motivates reducing the cost of Muon by applying orthogonalization to smaller randomly selected parts of a matrix, while MuonBP motivates periodic variants of orthogonalization. In our setting, we adapt these ideas to Monarch-parameterized layers. The goal is to introduce partial coupling between the two blocks of each Monarch factor while still avoiding Newton--Schulz orthogonalization of the full effective matrix.
+
+For each Monarch factor, we concatenate its two trainable blocks along the column dimension according to the Monarch layer layout. For the \(L\)-factor, this gives
+\[
+C_L = \operatorname{ColConcat}\!\left(L^{(1)}, L^{(2)}\right),
+\]
+and for the corresponding momentum matrices,
+\[
+M_L = \operatorname{ColConcat}\!\left(M^{L^{(1)}}, M^{L^{(2)}}\right).
+\]
+At every periodic step, we randomly sample half of the columns of \(C_L\). Let this random set of column indices be denoted by \(\mathcal{I}_L\), and let \(\overline{\mathcal{I}}_L\) be its complement. We then apply Newton--Schulz orthogonalization separately to the selected and unselected column groups:
+\[
+O_L^{\mathcal{I}}
+=
+\operatorname{NS}\!\left(M_L[:, \mathcal{I}_L]\right),
+\qquad
+O_L^{\overline{\mathcal{I}}}
+=
+\operatorname{NS}\!\left(M_L[:, \overline{\mathcal{I}}_L]\right).
+\]
+The two column groups are updated independently, scattered back into the concatenated matrix \(C_L\), and then split back into \(L^{(1)}\) and \(L^{(2)}\) using the original Monarch block boundaries. The same random column-partitioned procedure is applied to the \(R\)-factor.
+
+Here, \(\operatorname{ColSplit}_{\mathrm{orig}}\) denotes splitting a concatenated matrix back according to the original Monarch block boundaries.
+
+This strategy differs from the purely block-wise update because the random column split changes over training. As a result, different columns from the original Monarch blocks are periodically grouped together, allowing the optimizer to mix information across blocks over time. At the same time, each Newton--Schulz computation remains smaller than the full dense update. Thus, the method combines the structure of Monarch matrices \cite{dao2022monarchexpressivestructuredmatrices} with ideas from recent Muon variants that shrink or periodically modify the orthogonalization step \cite{ahn2025dion2simplemethodshrink,khaled2025muonbpfastermuonblockperiodic}.
+
+\begin{algorithm}[H]
+\caption{Random column-partitioned Muon update for Monarch layers}
+\label{alg:compact_random_column_muon}
+\small
+\begin{algorithmic}[1]
+\Require Learning rate \(\alpha\), momentum coefficient \(\beta\), period \(q\)
+\Require Monarch blocks \(L^{(1)}, L^{(2)}, R^{(1)}, R^{(2)}\) constructed by the Monarch layer
+\State Initialize \(M_0^B \gets 0\) for all \(B \in \{L^{(1)},L^{(2)},R^{(1)},R^{(2)}\}\)
+
+\For{training step \(t=1,2,\dots\)}
+    \State Compute loss \(\mathcal{L}(\Theta_{t-1})\) and gradients by backpropagation
+
+    \For{each block \(B \in \{L^{(1)},L^{(2)},R^{(1)},R^{(2)}\}\)}
+        \State \(G_t^B \gets \nabla_B \mathcal{L}(\Theta_{t-1})\)
+        \State \(M_t^B \gets \beta M_{t-1}^B + G_t^B\)
+    \EndFor
+
+    \If{\(t \bmod q = 0\)}
+        \For{each factor \(F \in \{L,R\}\)}
+            \State \(C_F \gets \operatorname{ColConcat}(F^{(1)}_{t-1},F^{(2)}_{t-1})\)
+            \State \(M_F \gets \operatorname{ColConcat}(M_t^{F^{(1)}},M_t^{F^{(2)}})\)
+            \State Sample random \(\mathcal{I}_F\) such that
+            \[
+            |\mathcal{I}_F|=\frac{1}{2}\operatorname{cols}(C_F)
+            \]
+            \State Let \(\overline{\mathcal{I}}_F\) be the complement of \(\mathcal{I}_F\)
+            \State \(C_F[:,\mathcal{I}_F] \gets C_F[:,\mathcal{I}_F]
+            - \alpha \operatorname{NS}_K(M_F[:,\mathcal{I}_F])\)
+            \State \(C_F[:,\overline{\mathcal{I}}_F] \gets C_F[:,\overline{\mathcal{I}}_F]
+            - \alpha \operatorname{NS}_K(M_F[:,\overline{\mathcal{I}}_F])\)
+            \State \((F^{(1)}_t,F^{(2)}_t) \gets \operatorname{ColSplit}_{\mathrm{orig}}(C_F)\)
+        \EndFor
+    \Else
+        \For{each block \(B \in \{L^{(1)},L^{(2)},R^{(1)},R^{(2)}\}\)}
+            \State \(B_t \gets B_{t-1} - \alpha \operatorname{NS}_K(M_t^B)\)
+        \EndFor
+    \EndIf
+
+    \State Reconstruct \(\widetilde{W}_t = P L_t P^\top R_t\)
+\EndFor
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Properties of the proposed algorithms}
+
+The proposed algorithms have several useful properties. First, they reduce the size of the matrices used in Newton--Schulz orthogonalization. Standard Muon applies Newton--Schulz iterations to full dense matrix updates \cite{jordan2024muon,liu2025muonscalablellmtraining}. In contrast, the proposed block-wise variant applies the same procedure to smaller Monarch factors. Since Newton--Schulz iterations rely on matrix multiplications, reducing matrix size directly reduces the computational cost of the orthogonalization step.
+
+Second, the block-wise Newton--Schulz computations are independent after gradients have been computed. Therefore, the updates of \(L^{(1)}\), \(L^{(2)}\), \(R^{(1)}\), and \(R^{(2)}\) can be performed in parallel. This parallels the motivation behind distributed or parallel orthogonalized-update methods such as Dion \cite{ahn2025diondistributedorthonormalizedupdates}, but the source of parallelism in our method comes from the structured parameterization rather than from a distributed reformulation of the optimizer.
+
+Third, the random column-partitioned update introduces additional coupling between the two blocks of each Monarch factor. This is inspired by the idea of shrinking the matrix inside Muon as in Dion2 \cite{ahn2025dion2simplemethodshrink} and by periodic orthogonalization schemes such as MuonBP \cite{khaled2025muonbpfastermuonblockperiodic}. The random partition changes over time, so different columns are grouped together across training steps.
+
+Finally, the proposed method changes the optimization problem. The model no longer optimizes over all dense matrices \(W\), but over structured parameters \(L^{(1)}\), \(L^{(2)}\), \(R^{(1)}\), and \(R^{(2)}\). This can reduce computational cost, but it may also reduce expressivity. Therefore, the method introduces a trade-off between efficiency and model quality, similar to the general trade-offs studied in structured matrix parameterizations \cite{dao2022monarchexpressivestructuredmatrices}.
+
 \section{Related Work}\label{sec:rw}
 
-\textbf{Topic \#1.}
-TODO
+\subsection{Muon and orthogonalized optimizers}
 
-\textbf{Topic \#2.}
-TODO
+Muon was introduced as an optimizer that applies orthogonalized updates to matrix-valued parameters, with practical implementations relying on Newton--Schulz iterations to approximate the polar factor \cite{jordan2024muon}. Recent work demonstrated that Muon can be scaled to large language model training when combined with suitable update scaling and weight decay choices \cite{liu2025muonscalablellmtraining}. This result motivates the study of Muon as a competitive alternative to standard adaptive optimizers such as AdamW, while also highlighting the importance of reducing the additional cost introduced by orthogonalization.
+
+Several works improve or modify Muon-type updates. Scion studies training with norm-constrained linear minimization oracles and introduces normalization mechanisms that are related to the stability of orthogonalized updates \cite{pethick2025trainingdeeplearningmodels}. Dion proposes distributed orthonormalized updates and replaces Newton--Schulz-style orthogonalization with a power-iteration-based approach that is better suited for parallel execution \cite{ahn2025diondistributedorthonormalizedupdates}. Dion2 reduces the size of the matrix used in Muon by applying orthogonalization to smaller randomly selected submatrices \cite{ahn2025dion2simplemethodshrink}. MuonBP proposes block-periodic orthogonalization, reducing the frequency or scope of expensive orthogonalization steps \cite{khaled2025muonbpfastermuonblockperiodic}. In contrast to these works, our method does not primarily modify Muon itself, but changes the structure of the trainable matrices to make the orthogonalization step cheaper.
+
+\subsection{Improving Newton--Schulz orthogonalization}
+
+Another line of work focuses directly on improving the Newton--Schulz iteration or related matrix sign methods. Gram Newton--Schulz proposes a modified formulation of the Newton--Schulz procedure for Muon-style optimization \cite{GramNewtonSchulz}. Polar Express studies optimal matrix sign methods and their application to the Muon algorithm \cite{amsel2026polarexpressoptimalmatrix}. These methods are complementary to our approach: they aim to make the orthogonalization procedure itself more efficient or more accurate, whereas we reduce the size of the matrices to which orthogonalization is applied.
+
+\subsection{Structured matrix parameterizations}
+
+Structured matrices provide a different way to reduce computational cost by restricting the class of trainable weight matrices. Monarch matrices represent a dense-like linear transformation as a product of permutation and block-diagonal matrices and were shown to provide efficient and accurate training in neural networks \cite{dao2022monarchexpressivestructuredmatrices}. Our work builds on this representation by using Monarch-parameterized layers as a mechanism for reducing the cost of Muon. Instead of applying Newton--Schulz iterations to a full dense matrix update, we apply them to smaller block-structured factors, which can reduce computational cost and expose additional parallelism.
 
 \section{Preliminaries}\label{sec:prelim}
 
 \subsection{General notation}
 
-In this section, we introduce the general notation used in the rest of the paper and the basic assumptions. 
+In this section, we introduce the general notation used in the rest of the paper. We denote matrices by uppercase letters, vectors by lowercase letters, and trainable model parameters by \(\Theta\). For a matrix \(A\), \(\|A\|_F\) denotes its Frobenius norm. The notation \(\operatorname{NS}_K(A)\) denotes the result of applying \(K\) Newton--Schulz iterations to the matrix \(A\). For a matrix \(C\), the notation \(C[:,\mathcal{I}]\) denotes the submatrix formed by selecting the columns indexed by \(\mathcal{I}\).
 
-\subsection{Assumptions} 
+\subsection{Monarch layer structure}
 
-TODO
+For each selected dense layer, we replace the original weight matrix with a Monarch-parameterized matrix
+\[
+\widetilde{W} = P L P^\top R,
+\]
+where \(P\) is a fixed permutation matrix, and \(L\) and \(R\) are trainable block-diagonal factors. In our implementation, each factor consists of two trainable blocks:
+\[
+L = \operatorname{diag}(L^{(1)}, L^{(2)}),
+\qquad
+R = \operatorname{diag}(R^{(1)}, R^{(2)}).
+\]
+The dimensions of these blocks are determined by the Monarch layer construction and by the input and output dimensions of the replaced dense layer. They are not additional assumptions about the data, the model distribution, or the optimal dense weight matrix. Rather, they are part of the structured architecture used in place of the dense layer.
+
+For the random column-partitioned update, we use the block layout produced by the Monarch parameterization. The two blocks of each factor are concatenated along the column dimension according to this layout, updated, and then split back using the original block boundaries. Thus, the splitting operation is determined by the structured layer construction, not by an additional equal-size-block assumption.
 
 \section{Method}\label{sec:method}
 
+The proposed method replaces selected dense layers of a compact GPT-2 style model with Monarch-parameterized layers \cite{dao2022monarchexpressivestructuredmatrices}. The resulting trainable parameters are the block factors \(L^{(1)}\), \(L^{(2)}\), \(R^{(1)}\), and \(R^{(2)}\). We then apply Muon-style orthogonalized updates to these factors rather than to the full effective matrix \(\widetilde{W}\).
+
+We study two update strategies. The first is the purely block-wise strategy, where each block is updated independently using Newton--Schulz orthogonalization. The second is the random column-partitioned strategy, inspired by Dion2 and MuonBP \cite{ahn2025dion2simplemethodshrink,khaled2025muonbpfastermuonblockperiodic}, where the blocks of each Monarch factor are periodically concatenated according to the Monarch layout, randomly partitioned by columns, orthogonalized in two groups, and then split back using the original block boundaries.
+
 \section{Experiments}\label{sec:exp}
 
-To verify the theoretical estimates obtained, we conducted a detailed empirical study...
+To verify the theoretical estimates obtained, we conducted a detailed empirical study. We train a compact GPT-2 style language model with
+\[
+n_{\mathrm{layer}} = 4, \qquad
+n_{\mathrm{head}} = 4, \qquad
+n_{\mathrm{embd}} = 384.
+\]
+We compare AdamW, standard Muon, block-wise Monarch Muon, and the random column-partitioned Monarch Muon variant. Following the motivation of Muon as a scalable optimizer for language model training \cite{liu2025muonscalablellmtraining}, we use validation loss and perplexity as the main quality metrics. We also track computational characteristics related to the Newton--Schulz step, since this is the main source of additional cost in Muon-style methods \cite{jordan2024muon,GramNewtonSchulz,amsel2026polarexpressoptimalmatrix}.
+
+The proposed method is considered successful if its final perplexity differs from the Muon or AdamW baseline by only a few percent while reducing the cost of orthogonalization through smaller and potentially parallel block-wise Newton--Schulz updates.
 
 \section{Discussion}\label{sec:disc}
 
-TODO
+The proposed approach is complementary to recent optimizer-level improvements of Muon. Methods such as Dion, Dion2, MuonBP, Gram Newton--Schulz, and Polar Express modify the orthogonalization procedure, reduce the matrix size inside the optimizer, or improve the underlying matrix iteration \cite{ahn2025diondistributedorthonormalizedupdates,ahn2025dion2simplemethodshrink,khaled2025muonbpfastermuonblockperiodic,GramNewtonSchulz,amsel2026polarexpressoptimalmatrix}. In contrast, our method changes the parameterization of the model itself by introducing Monarch-structured layers \cite{dao2022monarchexpressivestructuredmatrices}. This means that the computational gain comes from applying the same Muon principle to smaller structured factors.
+
+At the same time, the method introduces a restriction on the hypothesis class of the model. A Monarch-parameterized layer cannot represent all dense matrices, so the main empirical question is whether the reduction in expressivity leads to a noticeable degradation in validation loss or perplexity. If the degradation remains small, the method can provide a practical way to reduce Muon's cost in settings where full dense orthogonalization is too expensive.
 
 \section{Conclusion}\label{sec:concl}
 
-TODO
-
+We studied a structure-based approach to reducing the computational cost of Muon. Instead of applying Muon to full dense layers, we replace selected layers with Monarch-parameterized matrices and apply Newton--Schulz orthogonalization to smaller trainable blocks. We also considered a random column-partitioned update inspired by Dion2 and MuonBP, which periodically couples columns across the two blocks of each Monarch factor. The resulting methods aim to preserve the optimization benefits of Muon while reducing the cost of its most expensive operation.
 
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \bibliographystyle{unsrtnat}
 \bibliography{references}
-
+\nocite{*}
 %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 
 \newpage
@@ -185,5 +468,4 @@ TODO
 \subsection{Additional experiments / Proofs of Theorems}\label{app:exp}
 
 TODO
-
 \end{document}
