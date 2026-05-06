@@ -1,0 +1,14 @@
+[project]
+name = "monarch-muon-experiment"
+version = "0.1.0"
+description = "Computational experiment for reducing Muon optimizer cost with Monarch-parameterized layers."
+requires-python = ">=3.10"
+dependencies = [
+  "torch>=2.1",
+  "numpy>=1.24",
+  "matplotlib>=3.7",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
