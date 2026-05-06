@@ -30,7 +30,8 @@
 
 ## Abstract
 
-Over the past year, the Muon method has gained substantial popularity in deep learning. In its standard form, Muon computes an approximation to the polar decomposition of a weight matrix at each iteration and applies an update using the resulting orthogonal factor, which introduces additional computational overhead. We propose [...] as a more efficient alternative and show, through pretraining experiments on several models, that it reduces computational cost while preserving the key optimization benefits of Muon.
+Muon has recently gained attention as an optimizer for neural network training because of its use of orthogonalized matrix-valued updates. In its standard form, Muon relies on Newton--Schulz iterations to approximate the polar factor of a matrix update, which introduces additional computational overhead. We study whether this cost can be reduced by replacing selected dense layers with Monarch-parameterized layers. This structure allows Newton--Schulz iterations to be applied to smaller block matrices and creates opportunities for parallel block-wise computation. We evaluate the proposed approach in pretraining experiments with a compact GPT-2 style model and compare it against Muon and AdamW baselines. We also evaluate a Dion2-inspired random column-partitioned variant as an ablation and find that it does not noticeably improve iteration-wise convergence over the simpler block-wise Monarch Muon update. Our goal is to reduce the cost of Muon's orthogonalization step while keeping validation loss and perplexity close to the baseline methods.
+\end{abstract}
 
 ## Citation
 
