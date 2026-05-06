@@ -20,7 +20,7 @@ The main paper result should focus on `monarch_muon`. The `monarch_dion` variant
 ```text
 .
 ├── run_experiment.py              # single main entry point
-├── src/monarch_muon/
+├── src/
 │   ├── config.py                  # special-purpose experiment parameter section
 │   ├── data.py                    # synthetic and memmap token loaders
 │   ├── train.py                   # training loop and local metric storage
@@ -29,11 +29,8 @@ The main paper result should focus on `monarch_muon`. The `monarch_dion` variant
 │   ├── layers/monarch.py          # MonarchLinear layer
 │   ├── models/gpt.py              # compact GPT-2 style model
 │   └── optim/muon.py              # Muon and Dion2-wise ablation optimizers
-├── tests/                         # smoke tests and optimizer-shape tests
-├── docs/commit_schedule.md        # suggested historical version points
 ├── requirements.txt
 ├── pyproject.toml
-└── Makefile
 ```
 
 ## Quick start
