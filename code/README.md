@@ -44,14 +44,6 @@ pip install -r requirements.txt
 PYTHONPATH=src python run_experiment.py --quick --methods adamw,muon,monarch_muon,monarch_dion --output-dir outputs/quick
 ```
 
-or simply:
-
-```bash
-make quick
-```
-
-The quick run is intentionally tiny. It verifies the full experiment flow: training, evaluation, metric storage, named plots, and LaTeX report generation.
-
 ## Running a larger local experiment
 
 ```bash
@@ -123,17 +115,4 @@ PYTHONPATH=src python run_experiment.py --quick --compile-tex
 
 This requires `pdflatex` to be installed.
 
-## Tests
-
-```bash
-make test
-```
-
 The tests are intentionally small and verify that Newton--Schulz preserves tensor shapes and that one Monarch-Muon smoke training step stores results.
-
-## Notes for publication
-
-- Do not commit large binary datasets or checkpoints.
-- Commit source code, configs, README, tests, and small example outputs only if needed.
-- Use the synthetic quick run for reproducibility checks.
-- Use the memmap mode for the actual reported experiment.
